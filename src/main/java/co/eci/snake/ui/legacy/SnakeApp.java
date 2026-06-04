@@ -10,6 +10,9 @@ import co.eci.snake.core.engine.GameClock;
 import javax.swing.*;
 import java.awt.*;
 import java.awt.event.ActionEvent;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executors;
@@ -18,28 +21,48 @@ public final class SnakeApp extends JFrame {
 
   private final Board board;
   private final GamePanel gamePanel;
-  private final JButton actionButton;
+  private final JButton startButton;
+  private final JButton pauseButton;
+  private final JButton resumeButton;
+  private final JLabel statusLabel;
   private final GameClock clock;
-  private final java.util.List<Snake> snakes = new java.util.ArrayList<>();
+  private final List<Snake> snakes = new ArrayList<>();
+  private final List<SnakeRunner> threads = new ArrayList<>();
+  // Orden de muerte: el primero en entrar fue el primero en morir
+  private final List<Snake> deathOrder = Collections.synchronizedList(new ArrayList<>());
 
   public SnakeApp() {
     super("The Snake Race");
     this.board = new Board(35, 28);
 
-    int N = Integer.getInteger("snakes", 2);
+    int N = Integer.getInteger("snakes", 5);
+    // Distribuir serpientes en cuadricula para que no se choquen al inicio
+    int cols = (int) Math.ceil(Math.sqrt(N));
+    int rows = (int) Math.ceil((double) N / cols);
     for (int i = 0; i < N; i++) {
-      int x = 2 + (i * 3) % board.width();
-      int y = 2 + (i * 2) % board.height();
+      int col = i % cols;
+      int row = i / cols;
+      int x = board.width()  / (cols + 1) * (col + 1);
+      int y = board.height() / (rows + 1) * (row + 1);
       var dir = Direction.values()[i % Direction.values().length];
       snakes.add(Snake.of(x, y, dir));
     }
 
     this.gamePanel = new GamePanel(board, () -> snakes);
-    this.actionButton = new JButton("Action");
+    this.startButton  = new JButton("Iniciar");
+    this.pauseButton  = new JButton("Pausar");
+    this.resumeButton = new JButton("Reanudar");
+    this.statusLabel  = new JLabel(" ");
+
+    JPanel southButtons = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
+    southButtons.add(startButton);
+    southButtons.add(pauseButton);
+    southButtons.add(resumeButton);
+    southButtons.add(statusLabel);
 
     setLayout(new BorderLayout());
     add(gamePanel, BorderLayout.CENTER);
-    add(actionButton, BorderLayout.SOUTH);
+    add(southButtons, BorderLayout.SOUTH);
 
     setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
     pack();
@@ -47,10 +70,18 @@ public final class SnakeApp extends JFrame {
 
     this.clock = new GameClock(60, () -> SwingUtilities.invokeLater(gamePanel::repaint));
 
-    var exec = Executors.newVirtualThreadPerTaskExecutor();
-    snakes.forEach(s -> exec.submit(new SnakeRunner(s, board)));
+    for (Snake s : snakes) {
+      final int idx = snakes.indexOf(s);
+      SnakeRunner runner = new SnakeRunner(s, board, snakes, () -> onSnakeDeath(idx));
+      threads.add(runner);
+    }
 
-    actionButton.addActionListener((ActionEvent e) -> togglePause());
+    startButton.addActionListener((ActionEvent e) -> toggleStart());
+    pauseButton.addActionListener((ActionEvent e) -> togglePause());
+    resumeButton.addActionListener((ActionEvent e) -> toggleResume());
+
+    pauseButton.setEnabled(false);
+    resumeButton.setEnabled(false);
 
     gamePanel.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(KeyStroke.getKeyStroke("SPACE"), "pause");
     gamePanel.getActionMap().put("pause", new AbstractAction() {
@@ -63,33 +94,21 @@ public final class SnakeApp extends JFrame {
     var player = snakes.get(0);
     InputMap im = gamePanel.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW);
     ActionMap am = gamePanel.getActionMap();
-    im.put(KeyStroke.getKeyStroke("LEFT"), "left");
+    im.put(KeyStroke.getKeyStroke("LEFT"),  "left");
     im.put(KeyStroke.getKeyStroke("RIGHT"), "right");
-    im.put(KeyStroke.getKeyStroke("UP"), "up");
-    im.put(KeyStroke.getKeyStroke("DOWN"), "down");
+    im.put(KeyStroke.getKeyStroke("UP"),    "up");
+    im.put(KeyStroke.getKeyStroke("DOWN"),  "down");
     am.put("left", new AbstractAction() {
-      @Override
-      public void actionPerformed(ActionEvent e) {
-        player.turn(Direction.LEFT);
-      }
+      @Override public void actionPerformed(ActionEvent e) { player.turn(Direction.LEFT); }
     });
     am.put("right", new AbstractAction() {
-      @Override
-      public void actionPerformed(ActionEvent e) {
-        player.turn(Direction.RIGHT);
-      }
+      @Override public void actionPerformed(ActionEvent e) { player.turn(Direction.RIGHT); }
     });
     am.put("up", new AbstractAction() {
-      @Override
-      public void actionPerformed(ActionEvent e) {
-        player.turn(Direction.UP);
-      }
+      @Override public void actionPerformed(ActionEvent e) { player.turn(Direction.UP); }
     });
     am.put("down", new AbstractAction() {
-      @Override
-      public void actionPerformed(ActionEvent e) {
-        player.turn(Direction.DOWN);
-      }
+      @Override public void actionPerformed(ActionEvent e) { player.turn(Direction.DOWN); }
     });
 
     if (snakes.size() > 1) {
@@ -99,43 +118,71 @@ public final class SnakeApp extends JFrame {
       im.put(KeyStroke.getKeyStroke('W'), "p2-up");
       im.put(KeyStroke.getKeyStroke('S'), "p2-down");
       am.put("p2-left", new AbstractAction() {
-        @Override
-        public void actionPerformed(ActionEvent e) {
-          p2.turn(Direction.LEFT);
-        }
+        @Override public void actionPerformed(ActionEvent e) { p2.turn(Direction.LEFT); }
       });
       am.put("p2-right", new AbstractAction() {
-        @Override
-        public void actionPerformed(ActionEvent e) {
-          p2.turn(Direction.RIGHT);
-        }
+        @Override public void actionPerformed(ActionEvent e) { p2.turn(Direction.RIGHT); }
       });
       am.put("p2-up", new AbstractAction() {
-        @Override
-        public void actionPerformed(ActionEvent e) {
-          p2.turn(Direction.UP);
-        }
+        @Override public void actionPerformed(ActionEvent e) { p2.turn(Direction.UP); }
       });
       am.put("p2-down", new AbstractAction() {
-        @Override
-        public void actionPerformed(ActionEvent e) {
-          p2.turn(Direction.DOWN);
-        }
+        @Override public void actionPerformed(ActionEvent e) { p2.turn(Direction.DOWN); }
       });
     }
 
     setVisible(true);
+  }
+
+  // Llamado desde el hilo del runner cuando una serpiente muere
+  private void onSnakeDeath(int idx) {
+    Snake s = snakes.get(idx);
+    deathOrder.add(s);
+    System.out.println("Serpiente " + idx + " murio. Longitud maxima: " + s.getMaxLength());
+  }
+
+  private void toggleStart() {
+    System.out.println("Iniciando juego con " + snakes.size() + " serpientes");
+    var exec = Executors.newVirtualThreadPerTaskExecutor();
+    for (SnakeRunner runner : threads) {
+      exec.submit(runner);
+    }
     clock.start();
+    startButton.setEnabled(false);
+    pauseButton.setEnabled(true);
+    resumeButton.setEnabled(true);
   }
 
   private void togglePause() {
-    if ("Action".equals(actionButton.getText())) {
-      actionButton.setText("Resume");
-      clock.pause();
-    } else {
-      actionButton.setText("Action");
-      clock.resume();
+    System.out.println("Pausando juego");
+    threads.forEach(SnakeRunner::pause);
+    clock.pause();
+    refreshStatus();
+  }
+
+  private void toggleResume() {
+    System.out.println("Reanudando juego");
+    threads.forEach(SnakeRunner::resume);
+    clock.resume();
+    statusLabel.setText(" ");
+  }
+
+  // Calcula y muestra las estadisticas en consola y en el label de la UI
+  private void refreshStatus() {
+    Comparator<Snake> byLength = Comparator.comparingInt(Snake::getMaxLength);
+    var longest = snakes.stream().filter(Snake::isAlive).max(byLength);
+    String longestText = longest.map(s -> "Serpiente " + snakes.indexOf(s) + " (largo: " + s.getMaxLength() + ")")
+                                .orElse("ninguna viva");
+
+    String firstDead;
+    synchronized (deathOrder) {
+      firstDead = deathOrder.isEmpty() ? "ninguna"
+          : "Serpiente " + snakes.indexOf(deathOrder.get(0));
     }
+
+    System.out.println("Serpiente viva mas larga: " + longestText);
+    System.out.println("Primera serpiente en morir: " + firstDead);
+    statusLabel.setText("Mas larga: " + longestText + "  |  Primera en morir: " + firstDead);
   }
 
   public static final class GamePanel extends JPanel {
@@ -209,10 +256,11 @@ public final class SnakeApp extends JFrame {
         g2.fillPolygon(xs, ys, xs.length);
       }
 
-      // Serpientes
+      // Serpientes — solo se dibujan las vivas
       var snakes = snakesSupplier.get();
       int idx = 0;
       for (Snake s : snakes) {
+        if (!s.isAlive()) { idx++; continue; }
         var body = s.snapshot().toArray(new Position[0]);
         for (int i = 0; i < body.length; i++) {
           var p = body[i];

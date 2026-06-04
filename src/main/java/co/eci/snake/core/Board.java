@@ -2,6 +2,7 @@ package co.eci.snake.core;
 
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -16,7 +17,7 @@ public final class Board {
   private final Set<Position> turbo = new HashSet<>();
   private final Map<Position, Position> teleports = new HashMap<>();
 
-  public enum MoveResult { MOVED, ATE_MOUSE, HIT_OBSTACLE, ATE_TURBO, TELEPORTED }
+  public enum MoveResult { MOVED, ATE_MOUSE, HIT_OBSTACLE, ATE_TURBO, TELEPORTED, HIT_SNAKE }
 
   public Board(int width, int height) {
     if (width <= 0 || height <= 0) throw new IllegalArgumentException("Board dimensions must be positive");
@@ -31,18 +32,33 @@ public final class Board {
   public int width() { return width; }
   public int height() { return height; }
 
+  // Los getters sincronizan y retornan copias defensivas: el hilo de UI puede leer
+  // sin competir con los runners que modifican las colecciones dentro de step()
   public synchronized Set<Position> mice() { return new HashSet<>(mice); }
   public synchronized Set<Position> obstacles() { return new HashSet<>(obstacles); }
   public synchronized Set<Position> turbo() { return new HashSet<>(turbo); }
   public synchronized Map<Position, Position> teleports() { return new HashMap<>(teleports); }
 
-  public synchronized MoveResult step(Snake snake) {
+  public synchronized MoveResult step(Snake snake, List<Snake> allSnakes) {
     Objects.requireNonNull(snake, "snake");
+    // Puede que otra serpiente la haya matado (cabeza con cabeza) antes de que entrara aqui
+    if (!snake.isAlive()) return MoveResult.MOVED;
+
     var head = snake.head();
     var dir = snake.direction();
     Position next = new Position(head.x() + dir.dx, head.y() + dir.dy).wrap(width, height);
 
     if (obstacles.contains(next)) return MoveResult.HIT_OBSTACLE;
+
+    // Colision serpiente-serpiente: la cabeza entra en el cuerpo de otra serpiente viva.
+    // Si es cabeza con cabeza, la otra tambien muere.
+    for (Snake other : allSnakes) {
+      if (other == snake || !other.isAlive()) continue;
+      if (other.occupies(next)) {
+        if (next.equals(other.head())) other.kill(); // cabeza-cabeza: mueren las dos
+        return MoveResult.HIT_SNAKE;
+      }
+    }
 
     boolean teleported = false;
     if (teleports.containsKey(next)) {
@@ -76,6 +92,7 @@ public final class Board {
     }
   }
 
+  // Solo se llama desde metodos ya sincronizados, no necesita lock propio
   private Position randomEmpty() {
     var rnd = ThreadLocalRandom.current();
     Position p;

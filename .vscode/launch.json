@@ -1,0 +1,21 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "java",
+            "name": "Parte 1 - PrimeFinder",
+            "request": "launch",
+            "mainClass": "primefinder.Main",
+            "projectName": "snake-race-java21",
+            "console": "integratedTerminal"
+        },
+        {
+            "type": "java",
+            "name": "Parte 2 - Snake Race",
+            "request": "launch",
+            "mainClass": "co.eci.snake.app.Main",
+            "projectName": "snake-race-java21",
+            "vmArgs": "-Dsnakes=5"
+        }
+    ]
+}
